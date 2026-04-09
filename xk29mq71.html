@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111;
+    --border: #222;
+    --text: #f0f0f0;
+    --muted: #555;
+    --accent: #e8ff5a;
+    --danger: #ff5a5a;
+    --mono: 'Space Mono', monospace;
+    --sans: 'Inter', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 360px;
+  }
+
+  .label {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 300;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  .code-wrap {
+    position: relative;
+    margin-bottom: 20px;
+  }
+
+  .code {
+    font-size: 52px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    line-height: 1;
+    transition: opacity 0.3s;
+  }
+
+  .code.refreshing {
+    opacity: 0.3;
+  }
+
+  .divider {
+    display: inline-block;
+    width: 10px;
+  }
+
+  .timer-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+
+  .track {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 1s linear, background 0.3s;
+  }
+
+  .bar.urgent {
+    background: var(--danger);
+  }
+
+  .secs {
+    font-size: 11px;
+    color: var(--muted);
+    min-width: 28px;
+    text-align: right;
+  }
+
+  .meta {
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--sans);
+    font-weight: 300;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* error state */
+  .err {
+    font-size: 13px;
+    color: var(--danger);
+    font-family: var(--sans);
+    font-weight: 300;
+    line-height: 1.6;
+  }
+
+  .err code {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: #1a0a0a;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #ff9a9a;
+    display: block;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="view-otp" style="display:none">
+    <div class="label" id="otp-label">one-time password</div>
+    <div class="code-wrap">
+      <div class="code" id="otp-code">
+        <span id="p1">---</span><span class="divider"> </span><span id="p2">---</span>
+      </div>
+    </div>
+    <div class="timer-row">
+      <div class="track"><div class="bar" id="bar"></div></div>
+      <div class="secs"><span id="secs">30</span>s</div>
+    </div>
+    <div class="meta">
+      <span id="secret-hint">secret: ****</span>
+      <div class="dot"></div>
+    </div>
+  </div>
+
+  <div id="view-err" style="display:none">
+    <div class="err" id="err-msg">
+      시크릿 키가 없습니다.<br>URL에 파라미터를 추가하세요:
+      <code>?secret=YOUR_BASE32_SECRET</code>
+    </div>
+  </div>
+</div>
+
+<script>
+function base32Decode(s) {
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  s = s.toUpperCase().replace(/[\s=]/g, '');
+  let bits = 0, val = 0;
+  const out = [];
+  for (const c of s) {
+    const i = CHARS.indexOf(c);
+    if (i < 0) continue;
+    val = (val << 5) | i;
+    bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((val >>> bits) & 0xff); }
+  }
+  return new Uint8Array(out);
+}
+
+async function totp(secret, ts) {
+  const step = Math.floor(ts / 30);
+  const key = base32Decode(secret);
+  const msg = new Uint8Array(8);
+  let t = step;
+  for (let i = 7; i >= 0; i--) { msg[i] = t & 0xff; t = Math.floor(t / 256); }
+  const ck = await crypto.subtle.importKey('raw', key, { name:'HMAC', hash:'SHA-1' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', ck, msg));
+  const off = sig[19] & 0xf;
+  const n = ((sig[off]&0x7f)<<24 | sig[off+1]<<16 | sig[off+2]<<8 | sig[off+3]) % 1000000;
+  return n.toString().padStart(6, '0');
+}
+
+function getSecret() {
+  try {
+    return new URL(location.href).searchParams.get('secret') || '';
+  } catch {
+    const m = location.search.match(/[?&]secret=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+}
+
+function getLabelParam() {
+  try {
+    return new URL(location.href).searchParams.get('label') || '';
+  } catch {
+    return '';
+  }
+}
+
+const secret = getSecret();
+const labelParam = getLabelParam();
+
+if (!secret) {
+  document.getElementById('view-err').style.display = 'block';
+} else {
+  document.getElementById('view-otp').style.display = 'block';
+  if (labelParam) document.getElementById('otp-label').textContent = labelParam;
+  const hint = secret.length > 6
+    ? secret.slice(0,3) + '···' + secret.slice(-2)
+    : '·'.repeat(secret.length);
+  document.getElementById('secret-hint').textContent = 'secret: ' + hint;
+
+  let lastStep = -1;
+
+  async function tick() {
+    const now = Math.floor(Date.now() / 1000);
+    const step = Math.floor(now / 30);
+    const rem = 30 - (now % 30);
+
+    document.getElementById('secs').textContent = rem;
+    const pct = (rem / 30) * 100;
+    const bar = document.getElementById('bar');
+    bar.style.width = pct + '%';
+    bar.classList.toggle('urgent', rem <= 5);
+
+    if (step !== lastStep) {
+      lastStep = step;
+      const el = document.getElementById('otp-code');
+      el.classList.add('refreshing');
+      try {
+        const code = await totp(secret, now);
+        document.getElementById('p1').textContent = code.slice(0,3);
+        document.getElementById('p2').textContent = code.slice(3);
+        el.classList.remove('refreshing');
+      } catch(e) {
+        document.getElementById('p1').textContent = 'ERR';
+        document.getElementById('p2').textContent = 'OR!';
+        el.style.color = 'var(--danger)';
+      }
+    }
+  }
+
+  tick();
+  setInterval(tick, 1000);
+}
+</script>
+</body>
+</html>
